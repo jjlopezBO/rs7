@@ -1,147 +1,95 @@
 ﻿using NLog;
 using System;
-using System.Text;
 using System.Globalization;
 using Oracle.ManagedDataAccess.Client;
-using System.Net;
+using System.Threading.Tasks;
+
 class Program
 {
     private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
-    private static bool ayer;
     private static DateOnly finicio;
     private static DateOnly ffin;
+    private static bool ayer;
 
-    private static List<FilesDown> lista;
-    private static DataRawObjectId rawObj;
 
     private static void ParseArgs(string[] args)
     {
-        finicio = DateOnly.FromDateTime(DateTime.Now.Date);
-        ffin = DateOnly.FromDateTime(DateTime.Now.Date);
-        ayer = false;
+        finicio = DateOnly.FromDateTime(DateTime.Today);
+        ffin = DateOnly.FromDateTime(DateTime.Today);
+        ayer = args?.Contains("-ayer", StringComparer.OrdinalIgnoreCase) ?? false;
 
-        if (args == null || args.Length == 0)
+        if (ayer)
         {
-            // Si no hay parámetros, se usa la fecha actual
-            Program.LogErrorOnDisk("Se considera la fecha actual.");
+            LogMessage("Se considera la fecha de ayer.");
+            finicio = ffin = DateOnly.FromDateTime(DateTime.Today.AddDays(-1));
+        }
+        else if (args?.Length == 2 && TryParseDate(args[0], out finicio) && TryParseDate(args[1], out ffin))
+        {
+            LogMessage($"Fechas establecidas: {finicio} - {ffin}");
         }
         else
         {
-            // Procesar los argumentos
-            for (int i = 0; i < args.Length; i++)
-            {
-                string arg = args[i];
-
-                // Comprobar si el parámetro es -ayer
-                if (arg.Equals("-ayer", StringComparison.OrdinalIgnoreCase))
-                {
-                    ayer = true;
-                    break;  // Si se encuentra -ayer, no procesamos -fi ni -ff
-                }
-            }
-
-            if (ayer)
-            {
-                // Si es -ayer, se ajustan las fechas a "ayer"
-                Program.LogErrorOnDisk("Se considera la fecha de ayer.");
-                finicio = DateOnly.FromDateTime(DateTime.Now.AddDays(-1).Date);
-                ffin = DateOnly.FromDateTime(DateTime.Now.AddDays(-1).Date);
-            }
-            else if (args.Length == 2)
-            {
-                // Si se reciben dos parámetros (por ejemplo, -fi y -ff)
-                try
-                {
-                    IFormatProvider provider = new CultureInfo("es-BO", true);
-                    Program.LogErrorOnDisk(string.Format("Parametros {0}-{1} ", args[0], args[1]));
-
-                    // Parsear las fechas con el formato dd.MM.yyyy
-                    finicio = DateOnly.FromDateTime(DateTime.ParseExact(args[0], "dd.MM.yyyy", provider));
-                    ffin = DateOnly.FromDateTime(DateTime.ParseExact(args[1], "dd.MM.yyyy", provider));
-                }
-                catch (FormatException e)
-                {
-                    Program.LogErrorOnDisk(e);
-                }
-            }
-            else
-            {
-                Program.LogErrorOnDisk("Parametros incorrectos. Se considera la fecha actual.");
-                finicio = DateOnly.FromDateTime(DateTime.Now.Date);
-                ffin = DateOnly.FromDateTime(DateTime.Now.Date);
-            }
+            LogMessage("No se proporcionaron argumentos válidos. Se considera la fecha actual.");
         }
     }
 
-    static void Main(string[] args)
+    private static bool TryParseDate(string input, out DateOnly date)
     {
+        return DateOnly.TryParseExact(input, "dd.MM.yyyy", new CultureInfo("es-BO"), DateTimeStyles.None, out date);
+    }
 
+    static async Task Main(string[] args)
+    {
+        ParseArgs(args);
 
-        Program.ParseArgs(args);
+        List<ArchivoDescarga> archivos = ArchivoDescarga.GetArchivos();
 
-        Logger.Info("Se ejecuta la carga de los dias {0} al {1}", finicio.ToString(), ffin.ToString());
-        Oracle.ManagedDataAccess.Client.OracleConnection cn = new Oracle.ManagedDataAccess.Client.OracleConnection("USER ID=spectrum;DATA SOURCE=(DESCRIPTION=(ADDRESS_LIST=(ADDRESS=(PROTOCOL=TCP)(HOST=192.168.2.13)(PORT=1521)))(CONNECT_DATA=(SERVER=DEDICATED)(SERVICE_NAME=orcl.cndc.bo)));PASSWORD=spectrum;PERSIST SECURITY INFO=true;");
-        cn.Open();
-        try
+        List<Task> tareas = new List<Task>();
+
+        foreach (ArchivoDescarga archivo in archivos)
         {
-            Program.rawObj = new DataRawObjectId(cn);
-            Program.lista = new FilesDown("", "", "").ReadFilesDown(cn);
-
-            while (finicio <= ffin)
+            tareas.Add(Task.Run(async () =>
             {
-                Program.LogErrorOnDisk(string.Format("Fecha proceso:{0} ", finicio));
-                foreach (FilesDown fd in Program.lista)
+                LogMessage($"Archivo: {archivo.Id} - {archivo.FilePattern}");
+
+                DateOnly fecha = finicio;
+                while (fecha <= ffin)
                 {
+                    LogMessage($"Fecha: {fecha}");
+
                     try
                     {
-                        Program.LogErrorOnDisk(string.Format("Procesar:{0}", fd.FilePattern));
-                        Program.ProcessDay(fd, finicio.ToDateTime(new TimeOnly(0)), cn);
-
+                        //await 
+                        archivo.ProcesarAsync(fecha);
                     }
                     catch (Exception e)
                     {
-
-                        LogErrorOnDisk(e);
+                        LogError(e);
                     }
 
+                    fecha = fecha.AddDays(1);
                 }
-
-
-
-                finicio = finicio.AddDays(1);
-            }
-        }
-        catch (Exception ex)
-        {
-            //   int num = (int)MessageBox.Show("se ha presentado un error por favor contactese con el adminsitrador");
-            LogErrorOnDisk(ex);
+            }));
         }
 
-    }
-    public static void LogErrorOnDisk(Exception e)
-    {
-        Logger.Error(e.ToString());
+        await Task.WhenAll(tareas);
 
+        LogMessage("Procesamiento finalizado");
     }
 
-    public static void LogErrorOnDisk(string e)
-    {
-        Logger.Info(e.ToString());
 
+    /* private static async Task RecargarElementosAsync()
+     {
+         elementos = await ElementoService.GetElementosAsync();
+     }*/
+
+    public static void LogMessage(string message)
+    {
+        Logger.Info(message);
     }
-    private static void ProcessDay(FilesDown fd, DateTime fecha, OracleConnection cn)
+
+    public static void LogError(Exception e)
     {
-        try
-        {
-            double num1 = fd.ReadFile(fecha.Date);
-            fd.LoadToDb(fecha.Date, cn);
-
-        }
-        catch (Exception e)
-        {
-            Program.LogErrorOnDisk(e);
-        }
-
-
+        Logger.Error(e, e.Message);
     }
 }
